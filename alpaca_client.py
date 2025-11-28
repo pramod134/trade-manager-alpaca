@@ -132,7 +132,7 @@ def place_equity_market(symbol: str, qty: int, side: str) -> Optional[float]:
                 return None
 
             payload = resp.json()
-            log("info", "alpaca_equity_raw_payload", payload)
+            log("alpaca_equity_raw_payload", payload)
     except Exception as e:
         log(
             "error",
@@ -270,7 +270,7 @@ def place_option_market(occ: str, qty: int, side: str) -> Optional[float]:
                 return None
 
             payload = resp.json()
-            log("info", "alpaca_equity_raw_payload", payload)
+            log("alpaca_equity_raw_payload", payload)
     except Exception as e:
         log(
             "error",
