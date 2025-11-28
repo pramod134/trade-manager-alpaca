@@ -1,3 +1,4 @@
 supabase
 httpx
 python-dotenv
+alpaca-py
