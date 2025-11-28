@@ -5,7 +5,8 @@ from typing import Any, Dict, Optional, Tuple
 from config import settings
 from logger import log
 import supabase_client
-import tradier_client
+import alpaca_client
+
 
 
 def _get_spot_price(spot_row: Optional[Dict[str, Any]]) -> Optional[float]:
@@ -404,7 +405,7 @@ def run_trade_manager() -> None:
                             qty=qty,
                             signal_price=signal_price,
                         )
-                        fill_price = tradier_client.place_equity_market(
+                        fill_price = alpaca_client.place_equity_market(
                             symbol, qty, "sell"
                         )
                     else:
@@ -417,7 +418,7 @@ def run_trade_manager() -> None:
                             qty=qty,
                             signal_price=signal_price,
                         )
-                        fill_price = tradier_client.place_option_market(
+                        fill_price = alpaca_client.place_option_market(
                             occ, qty, "sell_to_close"
                         )
 
@@ -511,7 +512,7 @@ def run_trade_manager() -> None:
                         symbol=symbol,
                         qty=qty,
                     )
-                    fill_price = tradier_client.place_equity_market(
+                    fill_price = alpaca_client.place_equity_market(
                         symbol, qty, "buy"
                     )
                 else:
@@ -522,7 +523,7 @@ def run_trade_manager() -> None:
                         occ=occ,
                         qty=qty,
                     )
-                    fill_price = tradier_client.place_option_market(
+                    fill_price = alpaca_client.place_option_market(
                         occ, qty, "buy_to_open"
                     )
 
@@ -603,7 +604,7 @@ def run_trade_manager() -> None:
                             symbol=symbol,
                             qty=qty,
                         )
-                        fill_price = tradier_client.place_equity_market(
+                        fill_price = alpaca_client.place_equity_market(
                             symbol, qty, "sell"
                         )
                     else:
@@ -614,7 +615,7 @@ def run_trade_manager() -> None:
                             occ=occ,
                             qty=qty,
                         )
-                        fill_price = tradier_client.place_option_market(
+                        fill_price = alpaca_client.place_option_market(
                             occ, qty, "sell_to_close"
                         )
 
@@ -699,7 +700,7 @@ def run_trade_manager() -> None:
                             symbol=symbol,
                             qty=qty,
                         )
-                        fill_price = tradier_client.place_equity_market(
+                        fill_price = alpaca_client.place_equity_market(
                             symbol, qty, "sell"
                         )
                     else:
@@ -710,7 +711,7 @@ def run_trade_manager() -> None:
                             occ=occ,
                             qty=qty,
                         )
-                        fill_price = tradier_client.place_option_market(
+                        fill_price = alpaca_client.place_option_market(
                             occ, qty, "sell_to_close"
                         )
 
