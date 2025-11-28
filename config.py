@@ -22,6 +22,11 @@ class Settings:
     alpaca_key: str = os.environ.get("ALPACA_KEY", "")
     alpaca_secret: str = os.environ.get("ALPACA_SECRET", "")
 
+    print("alpaca_base =", settings.alpaca_base)
+    print("alpaca_key_set =", bool(settings.alpaca_key))
+    print("alpaca_secret_set =", bool(settings.alpaca_secret))
+
+
     # Trade manager loop interval (seconds)
     trade_manager_interval: float = float(
         os.environ.get("TRADE_MANAGER_INTERVAL", "0.5")
