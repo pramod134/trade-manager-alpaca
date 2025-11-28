@@ -111,11 +111,26 @@ def place_equity_market(symbol: str, qty: int, side: str) -> Optional[float]:
         "type": "market",
         "time_in_force": "day",
     }
-
+    
     try:
         with httpx.Client(timeout=8.0) as client:
             resp = client.post(url, headers=_headers(), json=data)
-            resp.raise_for_status()
+            try:
+                resp.raise_for_status()
+            except httpx.HTTPStatusError as e:
+                # Log HTTP status + Alpaca response body for debugging (403, 422, etc.)
+                log(
+                    "error",
+                    "alpaca_equity_http_error",
+                    symbol=symbol,
+                    qty=qty,
+                    side=side_norm,
+                    status_code=resp.status_code,
+                    response_text=resp.text,
+                    error=str(e),
+                )
+                return None
+
             payload = resp.json()
     except Exception as e:
         log(
@@ -201,7 +216,7 @@ def place_option_market(occ: str, qty: int, side: str) -> Optional[float]:
         Approximate fill price (float) if available, else None.
     """
 
-        # Skip placing options MARKET orders outside regular market hours.
+    # Skip placing options MARKET orders outside regular market hours.
     if not _is_market_open_now():
         log(
             "info",
@@ -233,11 +248,26 @@ def place_option_market(occ: str, qty: int, side: str) -> Optional[float]:
         # make it explicit we're dealing with options
         "asset_class": "option",
     }
-
+    
     try:
         with httpx.Client(timeout=8.0) as client:
             resp = client.post(url, headers=_headers(), json=data)
-            resp.raise_for_status()
+            try:
+                resp.raise_for_status()
+            except httpx.HTTPStatusError as e:
+                # Log HTTP status + Alpaca response body for debugging
+                log(
+                    "error",
+                    "alpaca_option_http_error",
+                    occ=occ,
+                    qty=qty,
+                    side=side,
+                    status_code=resp.status_code,
+                    response_text=resp.text,
+                    error=str(e),
+                )
+                return None
+
             payload = resp.json()
     except Exception as e:
         log(
@@ -249,6 +279,7 @@ def place_option_market(occ: str, qty: int, side: str) -> Optional[float]:
             error=str(e),
         )
         return None
+
 
     status = (payload or {}).get("status")
     if status not in (
