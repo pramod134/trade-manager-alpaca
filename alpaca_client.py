@@ -1,8 +1,30 @@
 import httpx
 from typing import Optional
+from datetime import datetime, time
+from zoneinfo import ZoneInfo
 
 from config import settings
 from logger import log
+
+
+def _is_market_open_now() -> bool:
+    """
+    Return True if it's regular market hours in New York (Mon–Fri, 9:30–16:00 ET).
+    No holiday calendar – just weekday + time.
+    """
+    try:
+        now = datetime.now(ZoneInfo("America/New_York"))
+    except Exception:
+        # Fallback: if timezone fails for some reason, assume open
+        now = datetime.utcnow()
+
+    # 0 = Monday, 6 = Sunday
+    if now.weekday() >= 5:
+        return False
+
+    t = now.time()
+    # Regular hours only – you can adjust if you want pre/postmarket
+    return time(9, 30) <= t <= time(16, 0)
 
 
 def _headers() -> dict:
@@ -178,6 +200,18 @@ def place_option_market(occ: str, qty: int, side: str) -> Optional[float]:
     Returns:
         Approximate fill price (float) if available, else None.
     """
+
+        # Skip placing options MARKET orders outside regular market hours.
+    if not _is_market_open_now():
+        log(
+            "info",
+            "alpaca_option_skipped_market_closed",
+            occ=occ,
+            qty=qty,
+            side=side,
+        )
+        return None
+        
     url = _order_url()
     occ_clean = _normalize_occ(occ)
     side_norm = _map_option_side(side)
