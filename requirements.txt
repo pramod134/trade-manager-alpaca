@@ -2,3 +2,4 @@ supabase
 httpx
 python-dotenv
 alpaca-py
+websocket-client
