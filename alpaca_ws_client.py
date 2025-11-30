@@ -56,13 +56,12 @@ def _update_order_status_in_db(
     try:
         sb = supabase_client.get_client()
         # Match by order_id (this is what trade_manager writes when placing orders)
-        resp = sb.table("active_trades").update(update).eq("order_id", order_id).execute()
+        sb.table("active_trades").update(update).eq("order_id", order_id).execute()
         log(
             "info",
             "alpaca_ws_db_update",
             order_id=order_id,
             update=update,
-            resp=resp,
         )
     except Exception as e:
         log(
@@ -91,7 +90,7 @@ def _handle_trade_update(payload: dict[str, Any]) -> None:
         "timestamp": "..."
       }
     """
-    event = payload.get("event")
+    ws_event = payload.get("event")
     order = payload.get("order") or {}
 
     order_id = order.get("id")
@@ -101,8 +100,8 @@ def _handle_trade_update(payload: dict[str, Any]) -> None:
         log("error", "alpaca_ws_missing_order_id", payload=payload)
         return
 
-    # We use `event` as comment, so you can see "new", "fill", "canceled", etc.
-    comment = event
+    # We use `ws_event` as comment, so you can see "new", "fill", "canceled", etc.
+    comment = ws_event
     _update_order_status_in_db(order_id=order_id, status=status, comment=comment)
 
     log(
@@ -110,7 +109,7 @@ def _handle_trade_update(payload: dict[str, Any]) -> None:
         "alpaca_ws_trade_update",
         order_id=order_id,
         status=status,
-        event=event,
+        ws_event=ws_event,
     )
 
 
