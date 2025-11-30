@@ -319,6 +319,11 @@ def run_trade_manager() -> None:
             tp_type = (row.get("tp_type") or "").lower()
             qty = int(row.get("qty") or 0)
 
+            # New: broker-order metadata from DB
+            order_id = row.get("order_id")
+            order_status = (row.get("order_status") or "").lower()
+            order_comment = row.get("comment")
+
             log(
                 "debug",
                 "tm_row_context",
@@ -332,9 +337,12 @@ def run_trade_manager() -> None:
                 sl_type=sl_type,
                 tp_type=tp_type,
                 qty=qty,
+                order_id=order_id,
+                order_status=order_status,
+                order_comment=order_comment,
             )
 
-            # Fetch spot rows for underlying + option
+            # ---------- Fetch spot rows for underlying + option ----------
             spot_under = None
             spot_option = None
             try:
@@ -353,14 +361,19 @@ def run_trade_manager() -> None:
                 )
                 continue
 
-            log(
-                "debug",
-                "tm_spot_context",
-                id=row_id,
-                symbol=symbol,
-                under_last=_get_spot_price(spot_under),
-                option_last=_get_spot_price(spot_option),
-            )
+            # Helpers
+            def _get_spot_price(spot_row: Optional[dict]) -> Optional[float]:
+                if not isinstance(spot_row, dict):
+                    return None
+                price = spot_row.get("last")
+                if price is None:
+                    price = spot_row.get("close")
+                try:
+                    return float(price) if price is not None else None
+                except Exception:
+                    return None
+
+            terminal_order_statuses = ("filled", "rejected", "canceled", "expired")
 
             # ---------- MANAGE = 'C' (force close) ----------
             if manage == "C":
@@ -405,7 +418,7 @@ def run_trade_manager() -> None:
                             qty=qty,
                             signal_price=signal_price,
                         )
-                        fill_price = alpaca_client.place_equity_market(
+                        fill_price, _ = alpaca_client.place_equity_market(
                             symbol, qty, "sell"
                         )
                     else:
@@ -418,7 +431,7 @@ def run_trade_manager() -> None:
                             qty=qty,
                             signal_price=signal_price,
                         )
-                        fill_price = alpaca_client.place_option_market(
+                        fill_price, _ = alpaca_client.place_option_market(
                             occ, qty, "sell_to_close"
                         )
 
@@ -432,7 +445,7 @@ def run_trade_manager() -> None:
                         signal_price=signal_price,
                     )
 
-                    # PATCH: Only treat as closed if we have a confirmed fill price.
+                    # Only treat as closed if we have a confirmed fill
                     if fill_price is None:
                         log(
                             "error",
@@ -478,11 +491,21 @@ def run_trade_manager() -> None:
                 log("debug", "tm_manage_skip", id=row_id, manage=manage)
                 continue
 
-            # ---------- STATUS = 'nt-waiting' (entry) ----------
+            # ---------- STATUS = 'nt-waiting' (new entry) ----------
             if status == "nt-waiting":
-                should_enter, entry_price = check_entry(
-                    row, spot_under, spot_option
-                )
+                # If an entry order is already working, do NOT send another
+                if order_id and order_status not in terminal_order_statuses:
+                    log(
+                        "debug",
+                        "tm_entry_order_pending",
+                        id=row_id,
+                        symbol=symbol,
+                        order_id=order_id,
+                        order_status=order_status,
+                    )
+                    continue
+
+                should_enter, entry_price = check_entry(row, spot_under, spot_option)
                 log(
                     "debug",
                     "tm_entry_check",
@@ -504,6 +527,7 @@ def run_trade_manager() -> None:
                 )
 
                 # Place order (asset_type still controls what we BUY/SELL, which is correct)
+                new_order_id: Optional[str] = None
                 if asset_type == "equity":
                     log(
                         "debug",
@@ -512,7 +536,7 @@ def run_trade_manager() -> None:
                         symbol=symbol,
                         qty=qty,
                     )
-                    fill_price = alpaca_client.place_equity_market(
+                    fill_price, new_order_id = alpaca_client.place_equity_market(
                         symbol, qty, "buy"
                     )
                 else:
@@ -523,9 +547,31 @@ def run_trade_manager() -> None:
                         occ=occ,
                         qty=qty,
                     )
-                    fill_price = alpaca_client.place_option_market(
+                    fill_price, new_order_id = alpaca_client.place_option_market(
                         occ, qty, "buy_to_open"
                     )
+
+                # Persist broker order metadata so WS listener can update status
+                if new_order_id and not order_id:
+                    try:
+                        sb = supabase_client.get_client()
+                        sb.table("active_trades").update(
+                            {
+                                "order_id": new_order_id,
+                                "order_status": "pending_new",
+                                "comment": "entry",
+                            }
+                        ).eq("id", row_id).execute()
+                        order_id = new_order_id
+                        order_status = "pending_new"
+                        order_comment = "entry"
+                    except Exception as e:
+                        log(
+                            "error",
+                            "tm_entry_order_meta_update_error",
+                            id=row_id,
+                            error=str(e),
+                        )
 
                 log(
                     "debug",
@@ -537,7 +583,7 @@ def run_trade_manager() -> None:
                     fill_price=fill_price,
                 )
 
-                # PATCH: Only move to managing if we have a confirmed fill.
+                # Only move to managing if we have a confirmed fill
                 if fill_price is None:
                     log(
                         "error",
@@ -551,33 +597,38 @@ def run_trade_manager() -> None:
                     continue
 
                 open_price = fill_price
-
                 try:
-                    supabase_client.insert_executed_trade_open(row, open_price)
-                    supabase_client.mark_as_managing(row_id)
-                    log(
-                        "info",
-                        "tm_entry_db_update",
-                        id=row_id,
-                        symbol=symbol,
+                    supabase_client.insert_executed_trade_open(
+                        active_trade_row=row,
+                        asset_type=asset_type,
+                        qty=qty,
                         open_price=open_price,
                     )
                 except Exception as e:
                     log(
                         "error",
-                        "tm_entry_db_error",
+                        "tm_entry_executed_insert_error",
+                        id=row_id,
+                        error=str(e),
+                    )
+                    continue
+
+                try:
+                    supabase_client.mark_as_managing(row_id)
+                except Exception as e:
+                    log(
+                        "error",
+                        "tm_entry_mark_managing_error",
                         id=row_id,
                         error=str(e),
                     )
 
-                continue
+                continue  # done with this trade for this loop
 
             # ---------- STATUS = 'nt-managing' / 'pos-managing' (SL / TP) ----------
             if status in ("nt-managing", "pos-managing"):
-                # Check SL first
-                sl_hit, sl_price_signal = check_sl(
-                    row, spot_under, spot_option
-                )
+                # ---- SL FIRST ----
+                sl_hit, sl_price_signal = check_sl(row, spot_under, spot_option)
                 log(
                     "debug",
                     "tm_sl_check",
@@ -596,6 +647,19 @@ def run_trade_manager() -> None:
                         price=sl_price_signal,
                     )
 
+                    # If an SL order is already working, don't send another
+                    if order_id and order_status not in terminal_order_statuses:
+                        log(
+                            "debug",
+                            "tm_sl_order_pending",
+                            id=row_id,
+                            symbol=symbol,
+                            order_id=order_id,
+                            order_status=order_status,
+                        )
+                        continue
+
+                    new_order_id = None
                     if asset_type == "equity":
                         log(
                             "debug",
@@ -604,7 +668,7 @@ def run_trade_manager() -> None:
                             symbol=symbol,
                             qty=qty,
                         )
-                        fill_price = alpaca_client.place_equity_market(
+                        fill_price, new_order_id = alpaca_client.place_equity_market(
                             symbol, qty, "sell"
                         )
                     else:
@@ -615,9 +679,31 @@ def run_trade_manager() -> None:
                             occ=occ,
                             qty=qty,
                         )
-                        fill_price = alpaca_client.place_option_market(
+                        fill_price, new_order_id = alpaca_client.place_option_market(
                             occ, qty, "sell_to_close"
                         )
+
+                    # Persist SL order metadata
+                    if new_order_id and not order_id:
+                        try:
+                            sb = supabase_client.get_client()
+                            sb.table("active_trades").update(
+                                {
+                                    "order_id": new_order_id,
+                                    "order_status": "pending_new",
+                                    "comment": "sl",
+                                }
+                            ).eq("id", row_id).execute()
+                            order_id = new_order_id
+                            order_status = "pending_new"
+                            order_comment = "sl"
+                        except Exception as e:
+                            log(
+                                "error",
+                                "tm_sl_order_meta_update_error",
+                                id=row_id,
+                                error=str(e),
+                            )
 
                     log(
                         "debug",
@@ -629,7 +715,7 @@ def run_trade_manager() -> None:
                         fill_price=fill_price,
                     )
 
-                    # PATCH: Only close if we have a confirmed fill.
+                    # Only close if we have a confirmed fill
                     if fill_price is None:
                         log(
                             "error",
@@ -670,10 +756,8 @@ def run_trade_manager() -> None:
 
                     continue  # done with this trade
 
-                # Then TP
-                tp_hit, tp_price_signal = check_tp(
-                    row, spot_under, spot_option
-                )
+                # ---- THEN TP ----
+                tp_hit, tp_price_signal = check_tp(row, spot_under, spot_option)
                 log(
                     "debug",
                     "tm_tp_check",
@@ -692,6 +776,19 @@ def run_trade_manager() -> None:
                         price=tp_price_signal,
                     )
 
+                    # If a TP order is already working, don't send another
+                    if order_id and order_status not in terminal_order_statuses:
+                        log(
+                            "debug",
+                            "tm_tp_order_pending",
+                            id=row_id,
+                            symbol=symbol,
+                            order_id=order_id,
+                            order_status=order_status,
+                        )
+                        continue
+
+                    new_order_id = None
                     if asset_type == "equity":
                         log(
                             "debug",
@@ -700,7 +797,7 @@ def run_trade_manager() -> None:
                             symbol=symbol,
                             qty=qty,
                         )
-                        fill_price = alpaca_client.place_equity_market(
+                        fill_price, new_order_id = alpaca_client.place_equity_market(
                             symbol, qty, "sell"
                         )
                     else:
@@ -711,9 +808,31 @@ def run_trade_manager() -> None:
                             occ=occ,
                             qty=qty,
                         )
-                        fill_price = alpaca_client.place_option_market(
+                        fill_price, new_order_id = alpaca_client.place_option_market(
                             occ, qty, "sell_to_close"
                         )
+
+                    # Persist TP order metadata
+                    if new_order_id and not order_id:
+                        try:
+                            sb = supabase_client.get_client()
+                            sb.table("active_trades").update(
+                                {
+                                    "order_id": new_order_id,
+                                    "order_status": "pending_new",
+                                    "comment": "tp",
+                                }
+                            ).eq("id", row_id).execute()
+                            order_id = new_order_id
+                            order_status = "pending_new"
+                            order_comment = "tp"
+                        except Exception as e:
+                            log(
+                                "error",
+                                "tm_tp_order_meta_update_error",
+                                id=row_id,
+                                error=str(e),
+                            )
 
                     log(
                         "debug",
@@ -725,7 +844,7 @@ def run_trade_manager() -> None:
                         fill_price=fill_price,
                     )
 
-                    # PATCH: Only close if we have a confirmed fill.
+                    # Only close if we have a confirmed fill
                     if fill_price is None:
                         log(
                             "error",
