@@ -679,12 +679,12 @@ def run_trade_manager() -> None:
                     )
                     try:
                         sb = supabase_client.get_client()
+                        safe_msg = (error_message or "")[:150]
                         sb.table("active_trades").update(
                             {
                                 "order_id": "Error",
                                 "order_status": "error",
-                                "manage": "N",
-                                safe_msg = (error_message or "")[:150]
+                                "manage": "N",                                
                                 "comment": f"entry_error_unknown: {safe_msg}",
                             }
                         ).eq("id", row_id).execute()
