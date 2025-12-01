@@ -636,12 +636,13 @@ def run_trade_manager() -> None:
                         )
                         try:
                             sb = supabase_client.get_client()
+                            safe_msg = (error_message or "")[:150]  # avoid huge alpaca strings
                             sb.table("active_trades").update(
                                 {
                                     "order_id": "Error",
                                     "order_status": "error",
                                     "manage": "N",
-                                    "comment": f"entry_error_{error_code or 'unknown'}",
+                                    "comment": f"entry_error_{error_code}: {safe_msg}",
                                 }
                             ).eq("id", row_id).execute()
                         except Exception as e:
@@ -683,7 +684,8 @@ def run_trade_manager() -> None:
                                 "order_id": "Error",
                                 "order_status": "error",
                                 "manage": "N",
-                                "comment": "entry_error_unknown",
+                                safe_msg = (error_message or "")[:150]
+                                "comment": f"entry_error_unknown: {safe_msg}",
                             }
                         ).eq("id", row_id).execute()
                     except Exception as e:
@@ -860,12 +862,13 @@ def run_trade_manager() -> None:
                             )
                             try:
                                 sb = supabase_client.get_client()
+                                safe_msg = (error_message or "")[:150]
                                 sb.table("active_trades").update(
                                     {
                                         "order_id": "Error",
                                         "order_status": "error",
                                         "manage": "N",
-                                        "comment": f"sl_error_{error_code or 'unknown'}",
+                                        "comment": f"sl_error_{error_code}: {safe_msg}",                        
                                     }
                                 ).eq("id", row_id).execute()
                             except Exception as e:
@@ -1076,12 +1079,13 @@ def run_trade_manager() -> None:
                             )
                             try:
                                 sb = supabase_client.get_client()
+                                safe_msg = (error_message or "")[:150]
                                 sb.table("active_trades").update(
                                     {
                                         "order_id": "Error",
                                         "order_status": "error",
                                         "manage": "N",
-                                        "comment": f"tp_error_{error_code or 'unknown'}",
+                                        "comment": f"tp_error_{error_code}: {safe_msg}",                                       
                                     }
                                 ).eq("id", row_id).execute()
                             except Exception as e:
