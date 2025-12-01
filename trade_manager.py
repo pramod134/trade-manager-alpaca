@@ -342,9 +342,41 @@ def run_trade_manager() -> None:
                 order_comment=order_comment,
             )
 
+            # ---------- AUTO-PROMOTE FILLED ENTRIES ----------
+            # If Alpaca/WebSocket already marked the order as filled but our
+            # trade status is still 'nt-waiting', promote it to 'nt-managing'
+            # so we don't send a second entry order. From this loop onward,
+            # SL/TP logic will manage the position.
+            if status == "nt-waiting" and order_id and order_status == "filled":
+                log(
+                    "info",
+                    "tm_entry_already_filled_promote",
+                    id=row_id,
+                    symbol=symbol,
+                    order_id=order_id,
+                    old_status=status,
+                    new_status="nt-managing",
+                )
+                try:
+                    sb = supabase_client.get_client()
+                    sb.table("active_trades").update(
+                        {"status": "nt-managing"}
+                    ).eq("id", row_id).execute()
+                    status = "nt-managing"
+                except Exception as e:
+                    log(
+                        "error",
+                        "tm_entry_promote_managing_update_error",
+                        id=row_id,
+                        symbol=symbol,
+                        order_id=order_id,
+                        error=str(e),
+                    )
+
             # ---------- Fetch spot rows for underlying + option ----------
             spot_under = None
             spot_option = None
+          
             try:
                 if symbol:
                     spot_under = supabase_client.fetch_spot(symbol)
