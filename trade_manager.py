@@ -526,8 +526,11 @@ def run_trade_manager() -> None:
                     price=entry_price,
                 )
 
-                # Place order (asset_type still controls what we BUY/SELL, which is correct)
+                # ---------- PLACE ENTRY ORDER (with error categories) ----------
                 new_order_id: Optional[str] = None
+                error_code: Optional[int] = None
+                error_message: Optional[str] = None
+
                 if asset_type == "equity":
                     log(
                         "debug",
@@ -536,8 +539,8 @@ def run_trade_manager() -> None:
                         symbol=symbol,
                         qty=qty,
                     )
-                    fill_price, new_order_id = alpaca_client.place_equity_market(
-                        symbol, qty, "buy"
+                    fill_price, new_order_id, error_code, error_message = (
+                        alpaca_client.place_equity_market(symbol, qty, "buy")
                     )
                 else:
                     log(
@@ -547,32 +550,120 @@ def run_trade_manager() -> None:
                         occ=occ,
                         qty=qty,
                     )
-                    fill_price, new_order_id = alpaca_client.place_option_market(
-                        occ, qty, "buy_to_open"
+                    fill_price, new_order_id, error_code, error_message = (
+                        alpaca_client.place_option_market(occ, qty, "buy_to_open")
                     )
 
-                # Persist broker order metadata so WS listener can update status
-                if new_order_id and not order_id:
+                # ---------- CATEGORY 1: we have an order_id (normal flow) ----------
+                if new_order_id:
+                    if not order_id:
+                        try:
+                            sb = supabase_client.get_client()
+                            sb.table("active_trades").update(
+                                {
+                                    "order_id": new_order_id,
+                                    "order_status": "pending_new",
+                                    "comment": "entry",
+                                }
+                            ).eq("id", row_id).execute()
+                            order_id = new_order_id
+                            order_status = "pending_new"
+                            order_comment = "entry"
+                        except Exception as e:
+                            log(
+                                "error",
+                                "tm_entry_order_meta_update_error",
+                                id=row_id,
+                                error=str(e),
+                            )
+
+                # ---------- CATEGORY 2 & 3: no order_id (hard vs soft error) ----------
+                if not new_order_id:
+                    # NOTE: error_code may be None if alpaca_client couldn't parse it;
+                    # treat unknown as fatal.
+                    fatal_codes = {400, 401, 403, 422}
+                    soft_codes = {429}
+
+                    is_fatal = (
+                        error_code in fatal_codes
+                        or error_code is None  # unknown -> be safe
+                    )
+                    is_soft = (error_code in soft_codes) or (
+                        isinstance(error_code, int) and error_code >= 500
+                    )
+
+                    if is_fatal:
+                        # Category 2: No order_id, fatal error -> hard stop this trade
+                        log(
+                            "error",
+                            "tm_entry_fatal_error",
+                            id=row_id,
+                            symbol=symbol,
+                            http_code=error_code,
+                            error=error_message,
+                        )
+                        try:
+                            sb = supabase_client.get_client()
+                            sb.table("active_trades").update(
+                                {
+                                    "order_id": "Error",
+                                    "order_status": "error",
+                                    "manage": "N",
+                                    "comment": f"entry_error_{error_code or 'unknown'}",
+                                }
+                            ).eq("id", row_id).execute()
+                        except Exception as e:
+                            log(
+                                "error",
+                                "tm_entry_fatal_error_update_failed",
+                                id=row_id,
+                                error=str(e),
+                            )
+                        # Do NOT try again; this row is effectively frozen
+                        continue
+
+                    if is_soft:
+                        # Category 3: No order_id, soft error -> log and allow retry
+                        log(
+                            "error",
+                            "tm_entry_soft_error",
+                            id=row_id,
+                            symbol=symbol,
+                            http_code=error_code,
+                            error=error_message,
+                        )
+                        # No DB changes; on next loop we'll try again if conditions still true
+                        continue
+
+                    # Fallback: unknown error with no order_id -> treat as fatal
+                    log(
+                        "error",
+                        "tm_entry_unknown_error_no_order_id",
+                        id=row_id,
+                        symbol=symbol,
+                        http_code=error_code,
+                        error=error_message,
+                    )
                     try:
                         sb = supabase_client.get_client()
                         sb.table("active_trades").update(
                             {
-                                "order_id": new_order_id,
-                                "order_status": "pending_new",
-                                "comment": "entry",
+                                "order_id": "Error",
+                                "order_status": "error",
+                                "manage": "N",
+                                "comment": "entry_error_unknown",
                             }
                         ).eq("id", row_id).execute()
-                        order_id = new_order_id
-                        order_status = "pending_new"
-                        order_comment = "entry"
                     except Exception as e:
                         log(
                             "error",
-                            "tm_entry_order_meta_update_error",
+                            "tm_entry_unknown_error_update_failed",
                             id=row_id,
                             error=str(e),
                         )
+                    continue
 
+                # ---------- entry result + open trade ----------
                 log(
                     "debug",
                     "tm_entry_result",
@@ -594,6 +685,8 @@ def run_trade_manager() -> None:
                         asset_type=asset_type,
                         qty=qty,
                     )
+                    # We rely on WS to update order_status to 'filled' later; next loop
+                    # will see that and we can promote to nt-managing in a separate patch
                     continue
 
                 open_price = fill_price
@@ -659,7 +752,10 @@ def run_trade_manager() -> None:
                         )
                         continue
 
-                    new_order_id = None
+                    new_order_id: Optional[str] = None
+                    error_code: Optional[int] = None
+                    error_message: Optional[str] = None
+
                     if asset_type == "equity":
                         log(
                             "debug",
@@ -668,8 +764,8 @@ def run_trade_manager() -> None:
                             symbol=symbol,
                             qty=qty,
                         )
-                        fill_price, new_order_id = alpaca_client.place_equity_market(
-                            symbol, qty, "sell"
+                        fill_price, new_order_id, error_code, error_message = (
+                            alpaca_client.place_equity_market(symbol, qty, "sell")
                         )
                     else:
                         log(
@@ -679,11 +775,13 @@ def run_trade_manager() -> None:
                             occ=occ,
                             qty=qty,
                         )
-                        fill_price, new_order_id = alpaca_client.place_option_market(
-                            occ, qty, "sell_to_close"
+                        fill_price, new_order_id, error_code, error_message = (
+                            alpaca_client.place_option_market(
+                                occ, qty, "sell_to_close"
+                            )
                         )
 
-                    # Persist SL order metadata
+                    # ---------- CATEGORY 1: SL order_id present ----------
                     if new_order_id and not order_id:
                         try:
                             sb = supabase_client.get_client()
@@ -704,6 +802,88 @@ def run_trade_manager() -> None:
                                 id=row_id,
                                 error=str(e),
                             )
+
+                    # ---------- CATEGORY 2 & 3: no order_id for SL ----------
+                    if not new_order_id:
+                        fatal_codes = {400, 401, 403, 422}
+                        soft_codes = {429}
+
+                        is_fatal = (
+                            error_code in fatal_codes
+                            or error_code is None
+                        )
+                        is_soft = (error_code in soft_codes) or (
+                            isinstance(error_code, int) and error_code >= 500
+                        )
+
+                        if is_fatal:
+                            # SL fatal error -> hard stop this trade (no more automation)
+                            log(
+                                "error",
+                                "tm_sl_fatal_error",
+                                id=row_id,
+                                symbol=symbol,
+                                http_code=error_code,
+                                error=error_message,
+                            )
+                            try:
+                                sb = supabase_client.get_client()
+                                sb.table("active_trades").update(
+                                    {
+                                        "order_id": "Error",
+                                        "order_status": "error",
+                                        "manage": "N",
+                                        "comment": f"sl_error_{error_code or 'unknown'}",
+                                    }
+                                ).eq("id", row_id).execute()
+                            except Exception as e:
+                                log(
+                                    "error",
+                                    "tm_sl_fatal_error_update_failed",
+                                    id=row_id,
+                                    error=str(e),
+                                )
+                            continue
+
+                        if is_soft:
+                            # Soft error on SL -> log, keep manage='Y' and try again next loop
+                            log(
+                                "error",
+                                "tm_sl_soft_error",
+                                id=row_id,
+                                symbol=symbol,
+                                http_code=error_code,
+                                error=error_message,
+                            )
+                            continue
+
+                        # Unknown no-order_id error -> treat as fatal
+                        log(
+                            "error",
+                            "tm_sl_unknown_error_no_order_id",
+                            id=row_id,
+                            symbol=symbol,
+                            http_code=error_code,
+                            error=error_message,
+                        )
+                        try:
+                            sb = supabase_client.get_client()
+                            sb.table("active_trades").update(
+                                {
+                                    "order_id": "Error",
+                                    "order_status": "error",
+                                    "manage": "N",
+                                    "comment": "sl_error_unknown",
+                                }
+                            ).eq("id", row_id).execute()
+                        except Exception as e:
+                            log(
+                                "error",
+                                "tm_sl_unknown_error_update_failed",
+                                id=row_id,
+                                error=str(e),
+                            )
+                        continue
 
                     log(
                         "debug",
@@ -756,6 +936,7 @@ def run_trade_manager() -> None:
 
                     continue  # done with this trade
 
+
                 # ---- THEN TP ----
                 tp_hit, tp_price_signal = check_tp(row, spot_under, spot_option)
                 log(
@@ -788,7 +969,10 @@ def run_trade_manager() -> None:
                         )
                         continue
 
-                    new_order_id = None
+                    new_order_id: Optional[str] = None
+                    error_code: Optional[int] = None
+                    error_message: Optional[str] = None
+
                     if asset_type == "equity":
                         log(
                             "debug",
@@ -797,8 +981,8 @@ def run_trade_manager() -> None:
                             symbol=symbol,
                             qty=qty,
                         )
-                        fill_price, new_order_id = alpaca_client.place_equity_market(
-                            symbol, qty, "sell"
+                        fill_price, new_order_id, error_code, error_message = (
+                            alpaca_client.place_equity_market(symbol, qty, "sell")
                         )
                     else:
                         log(
@@ -808,11 +992,13 @@ def run_trade_manager() -> None:
                             occ=occ,
                             qty=qty,
                         )
-                        fill_price, new_order_id = alpaca_client.place_option_market(
-                            occ, qty, "sell_to_close"
+                        fill_price, new_order_id, error_code, error_message = (
+                            alpaca_client.place_option_market(
+                                occ, qty, "sell_to_close"
+                            )
                         )
 
-                    # Persist TP order metadata
+                    # ---------- CATEGORY 1: TP order_id present ----------
                     if new_order_id and not order_id:
                         try:
                             sb = supabase_client.get_client()
@@ -833,6 +1019,85 @@ def run_trade_manager() -> None:
                                 id=row_id,
                                 error=str(e),
                             )
+
+                    # ---------- CATEGORY 2 & 3: no order_id for TP ----------
+                    if not new_order_id:
+                        fatal_codes = {400, 401, 403, 422}
+                        soft_codes = {429}
+
+                        is_fatal = (
+                            error_code in fatal_codes
+                            or error_code is None
+                        )
+                        is_soft = (error_code in soft_codes) or (
+                            isinstance(error_code, int) and error_code >= 500
+                        )
+
+                        if is_fatal:
+                            log(
+                                "error",
+                                "tm_tp_fatal_error",
+                                id=row_id,
+                                symbol=symbol,
+                                http_code=error_code,
+                                error=error_message,
+                            )
+                            try:
+                                sb = supabase_client.get_client()
+                                sb.table("active_trades").update(
+                                    {
+                                        "order_id": "Error",
+                                        "order_status": "error",
+                                        "manage": "N",
+                                        "comment": f"tp_error_{error_code or 'unknown'}",
+                                    }
+                                ).eq("id", row_id).execute()
+                            except Exception as e:
+                                log(
+                                    "error",
+                                    "tm_tp_fatal_error_update_failed",
+                                    id=row_id,
+                                    error=str(e),
+                                )
+                            continue
+
+                        if is_soft:
+                            log(
+                                "error",
+                                "tm_tp_soft_error",
+                                id=row_id,
+                                symbol=symbol,
+                                http_code=error_code,
+                                error=error_message,
+                            )
+                            continue
+
+                        log(
+                            "error",
+                            "tm_tp_unknown_error_no_order_id",
+                            id=row_id,
+                            symbol=symbol,
+                            http_code=error_code,
+                            error=error_message,
+                        )
+                        try:
+                            sb = supabase_client.get_client()
+                            sb.table("active_trades").update(
+                                {
+                                    "order_id": "Error",
+                                    "order_status": "error",
+                                    "manage": "N",
+                                    "comment": "tp_error_unknown",
+                                }
+                            ).eq("id", row_id).execute()
+                        except Exception as e:
+                            log(
+                                "error",
+                                "tm_tp_unknown_error_update_failed",
+                                id=row_id,
+                                error=str(e),
+                            )
+                        continue
 
                     log(
                         "debug",
@@ -884,5 +1149,6 @@ def run_trade_manager() -> None:
                             )
 
                     continue  # done with this trade
+
 
         time.sleep(settings.trade_manager_interval)
