@@ -80,7 +80,12 @@ def _extract_fill_price(order: dict) -> Optional[float]:
         return None
 
 
-def place_equity_market(symbol: str, qty: int, side: str) -> Tuple[Optional[float], Optional[str]]:
+
+def place_equity_market(
+    symbol: str,
+    qty: int,
+    side: str,
+) -> Tuple[Optional[float], Optional[str], Optional[int], Optional[str]]:
     """
     Place a market order for an equity via Alpaca PAPER account.
 
@@ -89,23 +94,27 @@ def place_equity_market(symbol: str, qty: int, side: str) -> Tuple[Optional[floa
     - side: "buy" or "sell"
 
     Returns:
-        (fill_price, order_id)
+        (fill_price, order_id, error_code, error_message)
 
         - fill_price: Approximate fill price (float) if available, else None.
         - order_id: Alpaca order id (str) if the order was accepted, else None.
+        - error_code: HTTP status code (int) on error, else None.
+        - error_message: Short error message/text on error, else None.
     """
     url = _order_url()
 
     side_norm = (side or "").lower()
     if side_norm not in ("buy", "sell"):
+        msg = f"invalid side: {side}"
         log(
             "error",
             "alpaca_equity_invalid_side",
             symbol=symbol,
             qty=qty,
             side=side,
+            error=msg,
         )
-        return None, None
+        return None, None, 400, msg  # treat as client-side fatal error
 
     data = {
         "symbol": symbol,
@@ -114,7 +123,7 @@ def place_equity_market(symbol: str, qty: int, side: str) -> Tuple[Optional[floa
         "type": "market",
         "time_in_force": "day",
     }
-    
+
     payload = None
     try:
         with httpx.Client(timeout=8.0) as client:
@@ -122,31 +131,39 @@ def place_equity_market(symbol: str, qty: int, side: str) -> Tuple[Optional[floa
             try:
                 resp.raise_for_status()
             except httpx.HTTPStatusError as e:
-                # Log HTTP status + Alpaca response body for debugging (403, 422, etc.)
+                # Category: HTTP error (400, 401, 403, 422, 429, 500, etc.)
+                status_code = resp.status_code
+                # Keep message short-ish for comment/log usage
+                text = resp.text or str(e)
+                short_text = text[:250]
+
                 log(
                     "error",
                     "alpaca_equity_http_error",
                     symbol=symbol,
                     qty=qty,
                     side=side_norm,
-                    status_code=resp.status_code,
-                    response_text=resp.text,
+                    status_code=status_code,
+                    response_text=text,
                     error=str(e),
                 )
-                return None, None
+                return None, None, status_code, short_text
 
             payload = resp.json()
             log("info", "alpaca_equity_raw_payload", payload=payload)
     except Exception as e:
+        # Network / client / JSON errors – no HTTP status_code available.
+        msg = str(e)
         log(
             "error",
             "alpaca_equity_order_error",
             symbol=symbol,
             qty=qty,
             side=side_norm,
-            error=str(e),
+            error=msg,
         )
-        return None, None
+        # error_code = None -> manager can decide whether to treat as fatal/soft
+        return None, None, None, msg
 
     status = (payload or {}).get("status")
     if status not in (
@@ -170,7 +187,9 @@ def place_equity_market(symbol: str, qty: int, side: str) -> Tuple[Optional[floa
     fill_price = _extract_fill_price(payload or {})
     order_id = (payload or {}).get("id")
 
-    return fill_price, order_id
+    # Success path: no HTTP error
+    return fill_price, order_id, None, None
+
 
 
 def _normalize_occ(occ: str) -> str:
@@ -212,7 +231,11 @@ def _map_option_side(side: str) -> Optional[str]:
     return None
 
 
-def place_option_market(occ: str, qty: int, side: str) -> Tuple[Optional[float], Optional[str]]:
+def place_option_market(
+    occ: str,
+    qty: int,
+    side: str,
+) -> Tuple[Optional[float], Optional[str], Optional[int], Optional[str]]:
     """
     Place a market order for an option via Alpaca PAPER account.
 
@@ -221,14 +244,17 @@ def place_option_market(occ: str, qty: int, side: str) -> Tuple[Optional[float],
     - side: "buy_to_open", "sell_to_close", etc. (mapped internally to "buy"/"sell")
 
     Returns:
-        (fill_price, order_id)
+        (fill_price, order_id, error_code, error_message)
 
         - fill_price: Approximate fill price (float) if available, else None.
         - order_id: Alpaca order id (str) if the order was accepted, else None.
+        - error_code: HTTP status code (int) on error, else None.
+        - error_message: Short error message/text on error, else None.
     """
 
     # Skip placing options MARKET orders outside regular market hours.
     if not _is_market_open_now():
+        msg = "market_closed_for_option_market_order"
         log(
             "info",
             "alpaca_option_skipped_market_closed",
@@ -236,19 +262,22 @@ def place_option_market(occ: str, qty: int, side: str) -> Tuple[Optional[float],
             qty=qty,
             side=side,
         )
-        return None, None
-        
+        # No HTTP error here; manager can treat this as soft/no-op if desired
+        return None, None, None, msg
+
     url = _order_url()
     occ_clean = _normalize_occ(occ)
     side_norm = _map_option_side(side)
 
     if not occ_clean:
+        msg = "missing OCC symbol"
         log("error", "alpaca_option_missing_symbol", occ=occ, qty=qty, side=side)
-        return None, None
+        return None, None, 400, msg
 
     if side_norm is None:
+        msg = f"invalid side: {side}"
         log("error", "alpaca_option_invalid_side", occ=occ, qty=qty, side=side)
-        return None, None
+        return None, None, 400, msg
 
     data = {
         "symbol": occ_clean,
@@ -259,7 +288,7 @@ def place_option_market(occ: str, qty: int, side: str) -> Tuple[Optional[float],
         # make it explicit we're dealing with options
         "asset_class": "option",
     }
-    
+
     payload = None
     try:
         with httpx.Client(timeout=8.0) as client:
@@ -267,6 +296,10 @@ def place_option_market(occ: str, qty: int, side: str) -> Tuple[Optional[float],
             try:
                 resp.raise_for_status()
             except httpx.HTTPStatusError as e:
+                status_code = resp.status_code
+                text = resp.text or str(e)
+                short_text = text[:250]
+
                 # Log HTTP status + Alpaca response body for debugging
                 log(
                     "error",
@@ -274,24 +307,25 @@ def place_option_market(occ: str, qty: int, side: str) -> Tuple[Optional[float],
                     occ=occ,
                     qty=qty,
                     side=side,
-                    status_code=resp.status_code,
-                    response_text=resp.text,
+                    status_code=status_code,
+                    response_text=text,
                     error=str(e),
                 )
-                return None, None
+                return None, None, status_code, short_text
 
             payload = resp.json()
             log("info", "alpaca_option_raw_payload", payload=payload)
     except Exception as e:
+        msg = str(e)
         log(
             "error",
             "alpaca_option_order_error",
             occ=occ,
             qty=qty,
             side=side,
-            error=str(e),
+            error=msg,
         )
-        return None, None
+        return None, None, None, msg
 
     status = (payload or {}).get("status")
     if status not in (
@@ -314,4 +348,5 @@ def place_option_market(occ: str, qty: int, side: str) -> Tuple[Optional[float],
     fill_price = _extract_fill_price(payload or {})
     order_id = (payload or {}).get("id")
 
-    return fill_price, order_id
+    return fill_price, order_id, None, None
+
