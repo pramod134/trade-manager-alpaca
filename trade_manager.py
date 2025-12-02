@@ -93,6 +93,10 @@ def _is_regular_market_open_now() -> bool:
 
 # PATCH: entry now respects entry_type, and always returns the price used for
 # decision (so logs can show entry_price even when should_enter=False).
+# ---------- ENTRY / SL / TP CHECKS ----------
+
+# PATCH: entry now respects entry_type, and always returns the price used for
+# decision (so logs can show entry_price even when should_enter=False).
 def check_entry(
     row: Dict[str, Any],
     spot_under: Optional[Dict[str, Any]],
@@ -105,49 +109,84 @@ def check_entry(
       - 'now' -> use spot price of entry_type instrument
       - 'ca'  -> TF candle close ABOVE entry_level (for the entry_type instrument)
       - 'cb'  -> TF candle close BELOW entry_level (for the entry_type instrument)
+      - 'at'  -> touch-based on spot price (direction from cp/side)
     """
 
     cond = (row.get("entry_cond") or "").lower()
-    level = row.get("entry_level")
+    if not cond:
+        return False, None
+
     entry_type = (row.get("entry_type") or "equity").lower()
     entry_tf = row.get("entry_tf")
+    level = row.get("entry_level")
+    asset_type = (row.get("asset_type") or "").lower()
+    cp = (row.get("cp") or "").lower()
+    side = (row.get("side") or "").lower()
 
-    # Pick which instrument we’re using for entry (equity vs option)
+    # no level needed for 'now'
+    if cond != "now" and level is None:
+        return False, None
+
+    # which instrument's prices to use (equity vs option)
     spot_row = _choose_spot_row(row, entry_type, spot_under, spot_option)
     if not spot_row:
         return False, None
 
-    # -------- NOW: tick-based entry on spot price --------
-    if cond == "now":
+    price: Optional[float] = None
+
+    # ---- price source rules ----
+    if cond in ("at", "now"):
+        # for 'at' and 'now' we ALWAYS use spot last price
         price = _get_spot_price(spot_row)
-        # If we have a price, we always return it for logging, even if we don't enter
-        if price is None:
+    elif cond in ("ca", "cb"):
+        # for ca/cb we use TF candle close
+        if not entry_tf:
             return False, None
-        # "now" is unconditional: if manage='Y' and status='nt-waiting', this fires immediately
+        price = _get_tf_close(spot_row, entry_tf)
+    else:
+        # unsupported condition
+        return False, None
+
+    if price is None:
+        return False, None
+
+    # ---- immediate entry ----
+    if cond == "now":
+        # enter immediately at current price
         return True, price
 
-    # -------- CA / CB: candle-based entry on TF close --------
-    if cond in ("ca", "cb"):
-        if entry_tf is None:
-            return False, None
+    # ---- touch-based entry ('at') ----
+    if cond == "at":
+        # Determine direction similar to SL/TP logic
+        if asset_type == "option":
+            if cp in ("c", "call"):
+                profit_when_up = True
+            elif cp in ("p", "put"):
+                profit_when_up = False
+            else:
+                # fall back to side when cp is missing/unknown
+                profit_when_up = (side != "short")
+        else:
+            # non-option: use side, default to long if missing
+            profit_when_up = (side != "short")
 
-        price = _get_tf_close(spot_row, entry_tf)
+        if profit_when_up:
+            # Long / calls: enter when price is at or BELOW level (buy at support)
+            should_enter = price <= level
+        else:
+            # Short / puts: enter when price is at or ABOVE level (sell at resistance)
+            should_enter = price >= level
 
-        # Always return the price used for the decision (if any), so logs can see it
-        if price is None or level is None:
-            return False, price
+        return should_enter, price
 
-        is_long = row.get("side") == "long"
+    # ---- candle-close entries (ca/cb) ----
+    if cond == "ca":
+        should_enter = price > level
+        return should_enter, price
 
-        # ca = close ABOVE the level
-        if cond == "ca":
-            should_enter = price > level
-            return should_enter, price
-
-        # cb = close BELOW the level
-        if cond == "cb":
-            should_enter = price < level
-            return should_enter, price
+    if cond == "cb":
+        should_enter = price < level
+        return should_enter, price
 
     # Unknown / unsupported condition
     return False, None
