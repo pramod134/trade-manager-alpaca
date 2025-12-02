@@ -1,6 +1,8 @@
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, time
 from typing import Any, Dict, Optional, Tuple
+from zoneinfo import ZoneInfo
+
 
 from config import settings
 from logger import log
@@ -61,6 +63,30 @@ def _get_tp_level(row: Dict[str, Any]) -> Optional[float]:
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+# ---------- MARKET HOURS HELPERS (manager-local) ----------
+
+MARKET_TZ = ZoneInfo("America/New_York")
+
+
+def _is_regular_market_open_now() -> bool:
+    """
+    Return True if it's regular *options* market hours in New York.
+    We also intentionally skip the first minute (9:30:00–9:30:59)
+    to avoid crazy opening spreads.
+
+    Window: Mon–Fri, 09:31–16:00 ET.
+    """
+    now_et = datetime.now(MARKET_TZ)
+
+    # 0 = Monday ... 6 = Sunday
+    if now_et.weekday() >= 5:
+        return False
+
+    t = now_et.time()
+    return time(9, 31) <= t <= time(16, 0)
+
 
 
 # ---------- ENTRY / SL / TP CHECKS ----------
@@ -575,6 +601,20 @@ def run_trade_manager() -> None:
                         alpaca_client.place_equity_market(symbol, qty, "buy")
                     )
                 else:
+                    # For options, only send market orders during regular hours,
+                    # and skip the first minute after open (09:30).
+                    if not _is_regular_market_open_now():
+                        log(
+                            "info",
+                            "tm_entry_skip_market_closed_option",
+                            id=row_id,
+                            symbol=symbol,
+                            occ=occ,
+                            qty=qty,
+                        )
+                        # Do NOT mark this as error; just try again on next loop.
+                        continue
+
                     log(
                         "debug",
                         "tm_entry_place_option",
@@ -802,6 +842,18 @@ def run_trade_manager() -> None:
                             alpaca_client.place_equity_market(symbol, qty, "sell")
                         )
                     else:
+                        if not _is_regular_market_open_now():
+                            log(
+                                "info",
+                                "tm_sl_skip_market_closed_option",
+                                id=row_id,
+                                symbol=symbol,
+                                occ=occ,
+                                qty=qty,
+                            )
+                            # Don't force error; try again on next loop.
+                            continue
+
                         log(
                             "debug",
                             "tm_sl_place_option",
@@ -814,6 +866,7 @@ def run_trade_manager() -> None:
                                 occ, qty, "sell_to_close"
                             )
                         )
+
 
                     # ---------- CATEGORY 1: SL order_id present ----------
                     if new_order_id and not order_id:
@@ -1020,6 +1073,17 @@ def run_trade_manager() -> None:
                             alpaca_client.place_equity_market(symbol, qty, "sell")
                         )
                     else:
+                        if not _is_regular_market_open_now():
+                            log(
+                                "info",
+                                "tm_tp_skip_market_closed_option",
+                                id=row_id,
+                                symbol=symbol,
+                                occ=occ,
+                                qty=qty,
+                            )
+                            continue
+
                         log(
                             "debug",
                             "tm_tp_place_option",
@@ -1032,6 +1096,7 @@ def run_trade_manager() -> None:
                                 occ, qty, "sell_to_close"
                             )
                         )
+
 
                     # ---------- CATEGORY 1: TP order_id present ----------
                     if new_order_id and not order_id:
