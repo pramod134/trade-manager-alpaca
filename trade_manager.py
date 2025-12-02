@@ -1,4 +1,4 @@
-import time
+import time as time_module
 from datetime import datetime, timezone, time
 from typing import Any, Dict, Optional, Tuple
 from zoneinfo import ZoneInfo
@@ -330,7 +330,7 @@ def run_trade_manager() -> None:
             rows = supabase_client.fetch_active_trades()
         except Exception as e:
             log("error", "tm_fetch_active_trades_error", error=str(e))
-            time.sleep(settings.trade_manager_interval)
+            time_module.sleep(settings.trade_manager_interval)
             continue
 
         for row in rows:
@@ -1252,4 +1252,4 @@ def run_trade_manager() -> None:
                     continue  # done with this trade
 
 
-        time.sleep(settings.trade_manager_interval)
+        time_module.sleep(settings.trade_manager_interval)
