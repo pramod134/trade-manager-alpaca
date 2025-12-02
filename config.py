@@ -29,7 +29,7 @@ class Settings:
 
     # Trade manager loop interval (seconds)
     trade_manager_interval: float = float(
-        os.environ.get("TRADE_MANAGER_INTERVAL", "0.5")
+        os.environ.get("TRADE_MANAGER_INTERVAL", "1")
     )
 
 
