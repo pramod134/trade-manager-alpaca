@@ -10,16 +10,21 @@ from datetime import datetime, timezone
 from supabase import create_client, Client
 from alpaca_client import place_equity_market, place_option_market
 from logger import log
-import config
+from config import settings
 
 
 # ================================================================
 #  GLOBAL SETTINGS & SUPABASE CLIENT
 # ================================================================
 
-SUPABASE_URL = config.SUPABASE_URL
-SUPABASE_KEY = config.SUPABASE_SERVICE_KEY
-ALPACA_BASE = config.ALPACA_BASE
+# Use settings object from config
+SUPABASE_URL = settings.supabase_url
+SUPABASE_KEY = settings.supabase_key
+
+ALPACA_BASE = settings.alpaca_base
+ALPACA_KEY = settings.alpaca_key
+ALPACA_SECRET = settings.alpaca_secret
+
 
 sb: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
