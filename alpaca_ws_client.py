@@ -32,14 +32,8 @@ def _update_order_status_in_db(
     comment: Optional[str],
 ) -> None:
     """
-    Update active_trades row(s) that match this Alpaca order_id.
-
-    We only touch:
-      - order_status
-      - comment
-
-    Your trade_manager already reads these fields and avoids
-    re-sending orders if status is non-terminal.
+    Update active_trades row(s) with this Alpaca order_id.
+    Logs how many rows were updated to detect race conditions.
     """
     if not order_id:
         return
@@ -55,14 +49,36 @@ def _update_order_status_in_db(
 
     try:
         sb = supabase_client.get_client()
-        # Match by order_id (this is what trade_manager writes when placing orders)
-        sb.table("active_trades").update(update).eq("order_id", order_id).execute()
-        log(
-            "info",
-            "alpaca_ws_db_update",
-            order_id=order_id,
-            update=update,
+
+        # request count so we know how many rows were updated
+        response = (
+            sb.table("active_trades")
+            .update(update)
+            .eq("order_id", order_id)
+            .execute()
         )
+
+        # Supabase returns updated rows under response.data
+        rows_updated = len(response.data) if response.data else 0
+
+        if rows_updated > 0:
+            log(
+                "info",
+                "alpaca_ws_db_update",
+                order_id=order_id,
+                rows_updated=rows_updated,
+                update=update,
+            )
+        else:
+            # IMPORTANT: this detects the race condition where TM hasn’t written order_id yet
+            log(
+                "warning",
+                "alpaca_ws_no_matching_order",
+                order_id=order_id,
+                update=update,
+                message="WS event received before trade_manager stored order_id",
+            )
+
     except Exception as e:
         log(
             "error",
@@ -71,6 +87,7 @@ def _update_order_status_in_db(
             update=update,
             error=str(e),
         )
+
 
 
 def _handle_trade_update(payload: dict[str, Any]) -> None:
