@@ -22,9 +22,6 @@ class Settings:
     alpaca_key: str = os.environ.get("ALPACA_KEY", "")
     alpaca_secret: str = os.environ.get("ALPACA_SECRET", "")
 
-    print(alpaca_base)
-    print(alpaca_key)
-    print(alpaca_secret)
 
 
     # Trade manager loop interval (seconds)
