@@ -628,6 +628,26 @@ def run_trade_manager() -> None:
                 error_code: Optional[int] = None
                 error_message: Optional[str] = None
 
+                # Pre-lock this trade to avoid duplicate orders if Supabase write is slow
+                try:
+                    sb = supabase_client.get_client()
+                    sb.table("active_trades").update(
+                        {
+                            "order_id": "sent",
+                            "order_status": "pending_new",
+                            "comment": "entry_prelock",
+                        }
+                    ).eq("id", row_id).execute()
+                    order_id = "sent"
+                    order_status = "pending_new"
+                except Exception as e:
+                    log(
+                        "error",
+                        "tm_entry_prelock_update_failed",
+                        id=row_id,
+                        error=str(e),
+                    )
+
                 if asset_type == "equity":
                     log(
                         "debug",
@@ -665,9 +685,13 @@ def run_trade_manager() -> None:
                         alpaca_client.place_option_market(occ, qty, "buy_to_open")
                     )
 
+                # Give Supabase and Alpaca a moment to settle before sending any other order
+                time_module.sleep(1)
+
+
                 # ---------- CATEGORY 1: we have an order_id (normal flow) ----------
                 if new_order_id:
-                    if not order_id:
+                    if not order_id or order_id == "sent":
                         try:
                             sb = supabase_client.get_client()
                             sb.table("active_trades").update(
