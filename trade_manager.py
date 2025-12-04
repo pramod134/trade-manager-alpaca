@@ -43,13 +43,14 @@ def get_alpaca_order(order_id: str):
     """
     url = f"{ALPACA_BASE}/v2/orders/{order_id}"
     headers = {
-        "APCA-API-KEY-ID": config.ALPACA_KEY,
-        "APCA-API-SECRET-KEY": config.ALPACA_SECRET,
+        "APCA-API-KEY-ID": ALPACA_KEY,
+        "APCA-API-SECRET-KEY": ALPACA_SECRET,
     }
     r = requests.get(url, headers=headers)
     if r.status_code != 200:
         raise Exception(f"Alpaca order status error: {r.status_code} - {r.text}")
     return r.json()
+
 
 
 # ================================================================
