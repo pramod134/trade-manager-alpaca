@@ -250,6 +250,12 @@ class TradeManager:
                        open_ts=None, open_price=None, open_cost_basis=None,
                        close_ts=None, close_price=None, close_cost_basis=None, close_reason=None):
 
+        # Convert datetimes to ISO strings so Supabase JSON encoder doesn’t choke
+        def _ts(val):
+            if isinstance(val, datetime):
+                return val.isoformat()
+            return val
+
         row = entry.row
         executed = {
             "active_trade_id": row["id"],
@@ -258,10 +264,10 @@ class TradeManager:
             "occ": row["occ"],
             "asset_type": row["asset_type"],
             "qty": row["qty"],
-            "open_ts": open_ts,
+            "open_ts": _ts(open_ts),
             "open_price": open_price,
             "open_cost_basis": open_cost_basis,
-            "close_ts": close_ts,
+            "close_ts": _ts(close_ts),
             "close_price": close_price,
             "close_cost_basis": close_cost_basis,
             "close_reason": close_reason,
@@ -278,6 +284,7 @@ class TradeManager:
         """
         Called when all 3 attempts failed.
         We mark manage='N', update DB with error, drop from cache.
+        No row is written to executed_trades, because nothing executed.
         """
         id_ = entry.row["id"]
 
@@ -291,17 +298,13 @@ class TradeManager:
             "manage": "N",
         })
 
-        # also log failed attempt
-        now = datetime.now(timezone.utc)
-        self._log_execution(entry,
-                            "error_entry" if entry.mode == "entry" else "error_exit",
-                            open_ts=now,
-                            open_price=None,
-                            open_cost_basis=None,
-                            close_ts=now,
-                            close_price=None,
-                            close_cost_basis=None,
-                            close_reason="error")
+        log(
+            "error",
+            "tm_fail_after_retries",
+            id=id_,
+            mode=entry.mode,
+            error=error_msg,
+        )
 
         if id_ in self.cache:
             del self.cache[id_]
