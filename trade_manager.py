@@ -11,6 +11,30 @@ from supabase import create_client, Client
 from alpaca_client import place_equity_market, place_option_market
 from logger import log
 from config import settings
+from datetime import datetime, timezone
+# ... your existing imports above ...
+
+from zoneinfo import ZoneInfo  # add this import (Python 3.9+)
+
+# ...
+
+def is_option_rth_now() -> bool:
+    """
+    Returns True only during regular trading hours for options:
+    9:31am–3:59pm US/Eastern, Monday–Friday.
+    """
+    now_et = datetime.now(ZoneInfo("America/New_York"))
+
+    # Monday=0, Sunday=6
+    if now_et.weekday() >= 5:
+        return False
+
+    minutes = now_et.hour * 60 + now_et.minute
+    start = 9 * 60 + 31   # 9:31
+    end = 15 * 60 + 59    # 3:59
+
+    return start <= minutes <= end
+
 
 
 # ================================================================
@@ -219,6 +243,15 @@ class TradeManager:
             return place_equity_market(symbol, qty, side)
 
         elif asset_type == "option":
+            # Only send option orders during RTH: 9:31–15:59 ET, Mon–Fri
+            if not is_option_rth_now():
+                return (
+                    0.0,
+                    None,
+                    "market_closed_for_option_rth",
+                    "options only allowed 9:31–15:59 ET",
+                )
+
             occ = row["occ"]
             return place_option_market(occ, qty, side)
 
@@ -336,16 +369,28 @@ class TradeManager:
 
         # ORDER NOT YET SUBMITTED
         if entry.entry_order_id is None:
-            entry.attempts += 1
             side = "buy" if entry.row["trade_type"] == "long" else "sell"
 
             fill_price, order_id, err_code, err_msg = self._place_order(entry, side, is_entry=True)
 
-            # retry logic on failure
+            # special: outside RTH for options → just wait, no retry burn
+            if err_code == "market_closed_for_option_rth":
+                log(
+                    "info",
+                    "tm_entry_wait_rth",
+                    id=id_,
+                    symbol=entry.row["symbol"],
+                    msg=err_msg,
+                )
+                return
+
+            # normal retry logic
             if order_id is None:
+                entry.attempts += 1
                 if entry.attempts >= 3:
                     self._fail_after_retries(entry, err_msg or "entry order failed")
                 return
+
 
             # success: store order_id, write minimal DB update
             entry.entry_order_id = order_id
@@ -428,16 +473,27 @@ class TradeManager:
 
         # ORDER NOT YET SUBMITTED
         if entry.exit_order_id is None:
-            entry.attempts += 1
-
             side = "sell" if entry.row["trade_type"] == "long" else "buy"
 
             fill_price, order_id, err_code, err_msg = self._place_order(entry, side, is_entry=False)
 
+            if err_code == "market_closed_for_option_rth":
+                log(
+                    "info",
+                    "tm_exit_wait_rth",
+                    id=id_,
+                    symbol=entry.row["symbol"],
+                    reason=reason,
+                    msg=err_msg,
+                )
+                return
+
             if order_id is None:
+                entry.attempts += 1
                 if entry.attempts >= 3:
                     self._fail_after_retries(entry, err_msg or "exit order failed")
                 return
+
 
             # success
             entry.exit_order_id = order_id
@@ -513,15 +569,25 @@ class TradeManager:
 
         # ORDER NOT SUBMITTED
         if entry.exit_order_id is None:
-            entry.attempts += 1
-
             side = "sell" if entry.row["trade_type"] == "long" else "buy"
 
             fill_price, order_id, err_code, err_msg = self._place_order(entry, side, is_entry=False)
+            if err_code == "market_closed_for_option_rth":
+                log(
+                    "info",
+                    "tm_force_close_wait_rth",
+                    id=id_,
+                    symbol=entry.row["symbol"],
+                    msg=err_msg,
+                )
+                return
+
             if order_id is None:
+                entry.attempts += 1
                 if entry.attempts >= 3:
                     self._fail_after_retries(entry, err_msg or "force-close failed")
                 return
+
 
             entry.exit_order_id = order_id
             entry.row["order_id"] = order_id
