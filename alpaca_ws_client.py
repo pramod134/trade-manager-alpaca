@@ -33,7 +33,8 @@ def _update_order_status_in_db(
 ) -> None:
     """
     Update active_trades row(s) with this Alpaca order_id.
-    Logs how many rows were updated to detect race conditions.
+    - Logs how many rows were updated.
+    - Retries a few times if no rows match (TM may not have stored order_id yet).
     """
     if not order_id:
         return
@@ -50,16 +51,14 @@ def _update_order_status_in_db(
     try:
         sb = supabase_client.get_client()
 
-        # request count so we know how many rows were updated
+        # First attempt
         response = (
             sb.table("active_trades")
             .update(update)
             .eq("order_id", order_id)
             .execute()
         )
-
-        # Supabase returns updated rows under response.data
-        rows_updated = len(response.data) if response.data else 0
+        rows_updated = len(response.data) if getattr(response, "data", None) else 0
 
         if rows_updated > 0:
             log(
@@ -69,15 +68,46 @@ def _update_order_status_in_db(
                 rows_updated=rows_updated,
                 update=update,
             )
-        else:
-            # IMPORTANT: this detects the race condition where TM hasn’t written order_id yet
-            log(
-                "warning",
-                "alpaca_ws_no_matching_order",
-                order_id=order_id,
-                update=update,
-                message="WS event received before trade_manager stored order_id",
+            return
+
+        # If 0 rows updated, retry a few times — TM may not have written order_id yet
+        log(
+            "warning",
+            "alpaca_ws_no_matching_order",
+            order_id=order_id,
+            update=update,
+            message="WS event received before trade_manager stored order_id",
+        )
+
+        for retry in range(5):  # ~500ms total with 0.1s sleep
+            time.sleep(0.1)
+            response_retry = (
+                sb.table("active_trades")
+                .update(update)
+                .eq("order_id", order_id)
+                .execute()
             )
+            rows_retry = len(response_retry.data) if getattr(response_retry, "data", None) else 0
+
+            if rows_retry > 0:
+                log(
+                    "info",
+                    "alpaca_ws_db_update_after_retry",
+                    order_id=order_id,
+                    rows_updated=rows_retry,
+                    retries=retry + 1,
+                    update=update,
+                )
+                return
+
+        # Still nothing after retries → real mismatch
+        log(
+            "warning",
+            "alpaca_ws_no_matching_order_after_retries",
+            order_id=order_id,
+            update=update,
+            message="WS update could not find order_id even after retries",
+        )
 
     except Exception as e:
         log(
