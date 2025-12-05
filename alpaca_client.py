@@ -41,6 +41,69 @@ def _headers() -> dict:
     }
 
 
+def get_order_status(order_id: str) -> Tuple[Optional[str], Optional[float], Optional[int], Optional[str]]:
+    """
+    Fetch the current status of an Alpaca order by its order_id.
+
+    Returns:
+        (status, filled_avg_price, error_code, error_message)
+
+        - status: e.g. 'new', 'accepted', 'pending_new', 'partially_filled',
+                  'filled', 'canceled', 'rejected', 'expired', etc.
+                  None if we couldn't fetch a valid response.
+        - filled_avg_price: float or None (from 'filled_avg_price' in the order)
+        - error_code: HTTP status code (int) on error, else None.
+        - error_message: Short error message/text on error, else None.
+    """
+    if not order_id:
+        return None, None, None, "empty order_id"
+
+    url = f"{_order_url()}/{order_id}"
+
+    try:
+        with httpx.Client(timeout=5.0) as client:
+            resp = client.get(url, headers=_headers())
+            resp.raise_for_status()
+            data = resp.json() or {}
+            status = data.get("status")
+            price_raw = data.get("filled_avg_price")
+            filled_price = float(price_raw) if price_raw is not None else None
+
+            if not status:
+                log(
+                    "error",
+                    "alpaca_get_order_no_status",
+                    order_id=order_id,
+                    raw=data,
+                )
+
+            return status, filled_price, None, None
+
+    except httpx.HTTPStatusError as e:
+        status_code = e.response.status_code if e.response is not None else None
+        text = e.response.text if e.response is not None else str(e)
+        short_text = (text or "")[:250]
+
+        log(
+            "error",
+            "alpaca_get_order_http_error",
+            order_id=order_id,
+            status_code=status_code,
+            response_text=short_text,
+        )
+        return None, None, status_code, short_text
+
+    except Exception as e:
+        msg = str(e)[:250]
+        log(
+            "error",
+            "alpaca_get_order_other_error",
+            order_id=order_id,
+            error=msg,
+        )
+        return None, None, None, msg
+
+
 def _order_url() -> str:
     """
     Build the Alpaca orders endpoint from ALPACA_BASE.
