@@ -304,11 +304,11 @@ def check_entry(
         return False, None
 
     if price is None:
-    # For 'now' we still want to enter even if we couldn't fetch a price.
-    # We'll log entry_price=None and rely on Alpaca fill_price.
-    if cond == "now":
-        return True, None
-    return False, None
+        # For 'now' we still want to enter even if we couldn't fetch a price.
+        # We'll log entry_price=None and rely on Alpaca fill_price.
+        if cond == "now":
+            return True, None
+        return False, None
 
 
     # ---- immediate entry ----
