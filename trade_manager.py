@@ -50,6 +50,18 @@ def _send_order_with_steps(row: Dict[str, Any], reason: str) -> None:
     occ = row.get("occ")
     qty = int(row.get("qty") or 0)
     asset_type = (row.get("asset_type") or "").lower()
+    
+    # 🚫 NEW: skip options outside regular trading hours BEFORE touching Supabase
+    if asset_type == "option" and not _rth_open_for_options():
+        log(
+            "info",
+            "tm_rth_skip_option",
+            id=row_id,
+            symbol=symbol,
+            occ=occ,
+            reason=reason,
+        )
+        return
 
     # ------------------------------------------------------------
     # STEP 0 — PRE-LOCK (atomic “sent” lock to prevent duplicates)
@@ -81,11 +93,7 @@ def _send_order_with_steps(row: Dict[str, Any], reason: str) -> None:
     error_code = None
     error_message = None
 
-    # Option RTH enforcement
-    if asset_type == "option" and not _rth_open_for_options():
-        log("info", "tm_rth_skip_option", id=row_id, occ=occ, reason=reason)
-        return
-
+   
     if asset_type == "equity":
         if reason == "entry":
             fill_price, new_order_id, error_code, error_message = \
