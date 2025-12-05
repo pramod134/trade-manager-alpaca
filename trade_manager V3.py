@@ -867,7 +867,280 @@ def run_trade_manager() -> None:
                     time_module.sleep(1)
                     continue
 
+        time_module.sleep(settings.trade_manager_interval)
 
-                    
+
+def run_trade_updater() -> None:
+    """
+    SECOND LOOP: Keeps DB in sync with Alpaca order status.
+
+    - Only touches rows with a *real* order_id (not None, not 'sent', not 'Error').
+    - Does NOT send new orders; only reads status from Alpaca and updates Supabase.
+
+    Behavior:
+      * ENTRY (status='nt-waiting'):
+          - When Alpaca reports 'filled':
+              - Insert executed_trades OPEN
+              - Set status = 'nt-managing'
+              - Set order_status = 'filled'
+
+      * EXIT (status in ('nt-managing','pos-managing') and comment in ['sl','tp','force']):
+          - When Alpaca reports 'filled':
+              - Insert executed_trades CLOSE with reason = comment
+              - Delete row from active_trades
+
+      * Any status (entry or exit):
+          - If Alpaca status is canceled/rejected/expired:
+              - order_status = that
+              - manage = 'N'  (bot stops touching it)
+
+          - Otherwise:
+              - order_status is updated to Alpaca status (pending, accepted, etc.)
+    """
+
+    log("info", "trade_updater_start", interval=settings.trade_manager_interval)
+
+    while True:
+        try:
+            rows = supabase_client.fetch_active_trades()
+        except Exception as e:
+            log("error", "tu_fetch_active_trades_error", error=str(e))
+            time_module.sleep(settings.trade_manager_interval)
+            continue
+
+        for row in rows:
+            row_id = row["id"]
+            symbol = row.get("symbol")
+            occ = row.get("occ")
+            manage = row.get("manage")
+            status = row.get("status")
+            asset_type = (row.get("asset_type") or "").lower()
+            qty = int(row.get("qty") or 0)
+            order_id = row.get("order_id")
+            order_status = (row.get("order_status") or "").lower()
+            comment = (row.get("comment") or "").lower()
+
+            # Only rows managed by bot or forced close
+            if manage not in ("Y", "C"):
+                continue
+
+            # Must have a "real" order id
+            if not _is_real_order_id(order_id):
+                continue
+
+            # Skip already terminal in DB
+            if order_status in TERMINAL_ORDER_STATUSES:
+                continue
+
+            log(
+                "debug",
+                "tu_row_context",
+                id=row_id,
+                symbol=symbol,
+                status=status,
+                manage=manage,
+                order_id=order_id,
+                order_status=order_status,
+                comment=comment,
+            )
+
+            # ---- Poll Alpaca for latest order status + filled price ----
+            alp_status, fill_price, err_code, err_msg = alpaca_client.get_order_status(order_id)
+
+            if alp_status is None:
+                log(
+                    "error",
+                    "tu_get_order_status_failed",
+                    id=row_id,
+                    symbol=symbol,
+                    order_id=order_id,
+                    http_code=err_code,
+                    error=err_msg,
+                )
+                continue
+
+            alp_status_norm = alp_status.lower()
+
+            # No change? skip
+            if alp_status_norm == order_status:
+                continue
+
+            log(
+                "info",
+                "tu_status_change_detected",
+                id=row_id,
+                symbol=symbol,
+                order_id=order_id,
+                db_status=order_status,
+                alpaca_status=alp_status_norm,
+            )
+
+            sb = None
+            try:
+                sb = supabase_client.get_client()
+            except Exception as e:
+                log("error", "tu_get_client_error", id=row_id, error=str(e))
+                continue
+
+            # --------------------------------------------------------
+            # 1) ENTRY FILLED  → promote to nt-managing + log open
+            # --------------------------------------------------------
+            if status == "nt-waiting" and alp_status_norm == "filled":
+                if fill_price is None:
+                    log(
+                        "error",
+                        "tu_entry_filled_no_price",
+                        id=row_id,
+                        symbol=symbol,
+                        order_id=order_id,
+                    )
+                    # Still mark as filled + nt-managing
+                    try:
+                        sb.table("active_trades").update(
+                            {
+                                "order_status": "filled",
+                                "status": "nt-managing",
+                            }
+                        ).eq("id", row_id).execute()
+                    except Exception as e:
+                        log(
+                            "error",
+                            "tu_entry_promote_no_price_update_failed",
+                            id=row_id,
+                            error=str(e),
+                        )
+                    continue
+
+                # We have a price: insert executed_trades OPEN and promote
+                try:
+                    supabase_client.insert_executed_trade_open(
+                        active_trade_row=row,
+                        asset_type=asset_type,
+                        qty=qty,
+                        open_price=fill_price,
+                    )
+                except Exception as e:
+                    log(
+                        "error",
+                        "tu_entry_executed_open_error",
+                        id=row_id,
+                        error=str(e),
+                    )
+
+                try:
+                    sb.table("active_trades").update(
+                        {
+                            "order_status": "filled",
+                            "status": "nt-managing",
+                        }
+                    ).eq("id", row_id).execute()
+                except Exception as e:
+                    log(
+                        "error",
+                        "tu_entry_promote_managing_error",
+                        id=row_id,
+                        error=str(e),
+                    )
+
+                continue
+
+            # --------------------------------------------------------
+            # 2) EXIT FILLED (SL / TP / FORCE) → close + delete
+            # --------------------------------------------------------
+            if status in ("nt-managing", "pos-managing") and alp_status_norm == "filled":
+                reason = "close"
+                if comment in ("sl", "tp", "force"):
+                    reason = comment
+
+                if fill_price is None:
+                    log(
+                        "error",
+                        "tu_exit_filled_no_price",
+                        id=row_id,
+                        symbol=symbol,
+                        order_id=order_id,
+                        reason=reason,
+                    )
+                    # Still delete row so it doesn't loop forever
+                    try:
+                        supabase_client.delete_trade(row_id)
+                    except Exception as e:
+                        log(
+                            "error",
+                            "tu_exit_delete_no_price_error",
+                            id=row_id,
+                            error=str(e),
+                        )
+                    continue
+
+                # Log close into executed_trades
+                try:
+                    supabase_client.update_executed_trade_close(
+                        active_trade_id=row_id,
+                        asset_type=asset_type,
+                        qty=qty,
+                        close_price=fill_price,
+                        reason=reason,
+                    )
+                except Exception as e:
+                    log(
+                        "error",
+                        "tu_exit_executed_close_error",
+                        id=row_id,
+                        error=str(e),
+                    )
+
+                # Delete from active_trades
+                try:
+                    supabase_client.delete_trade(row_id)
+                except Exception as e:
+                    log(
+                        "error",
+                        "tu_exit_delete_error",
+                        id=row_id,
+                        error=str(e),
+                    )
+
+                continue
+
+            # --------------------------------------------------------
+            # 3) TERMINAL but NOT filled (canceled / rejected / expired)
+            # --------------------------------------------------------
+            if alp_status_norm in ("canceled", "rejected", "expired"):
+                try:
+                    sb.table("active_trades").update(
+                        {
+                            "order_status": alp_status_norm,
+                            "manage": "N",
+                        }
+                    ).eq("id", row_id).execute()
+                except Exception as e:
+                    log(
+                        "error",
+                        "tu_terminal_unfilled_update_error",
+                        id=row_id,
+                        final_status=alp_status_norm,
+                        error=str(e),
+                    )
+                continue
+
+            # --------------------------------------------------------
+            # 4) Non-terminal intermediate status (pending, accepted, etc.)
+            # --------------------------------------------------------
+            try:
+                sb.table("active_trades").update(
+                    {
+                        "order_status": alp_status_norm,
+                    }
+                ).eq("id", row_id).execute()
+            except Exception as e:
+                log(
+                    "error",
+                    "tu_intermediate_status_update_error",
+                    id=row_id,
+                    new_status=alp_status_norm,
+                    error=str(e),
+                )
 
         time_module.sleep(settings.trade_manager_interval)
+
