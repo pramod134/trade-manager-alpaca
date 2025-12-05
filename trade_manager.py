@@ -671,7 +671,7 @@ def run_trade_manager() -> None:
                             qty=qty,
                             signal_price=signal_price,
                         )
-                        fill_price, _ = alpaca_client.place_equity_market(
+                        fill_price, _, _, _ = alpaca_client.place_equity_market(
                             symbol, qty, "sell"
                         )
                     else:
@@ -684,7 +684,7 @@ def run_trade_manager() -> None:
                             qty=qty,
                             signal_price=signal_price,
                         )
-                        fill_price, _ = alpaca_client.place_option_market(
+                        fill_price, _, _, _ = alpaca_client.place_option_market(
                             occ, qty, "sell_to_close"
                         )
 
