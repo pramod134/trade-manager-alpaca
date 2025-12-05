@@ -1,17 +1,16 @@
 import threading
-from trade_manager import run_trade_manager
-from alpaca_ws_client import run_alpaca_ws_forever
+from trade_manager import run_trade_manager, run_trade_updater
 
 
-def start_ws_client():
-    """Run Alpaca WebSocket client in its own thread."""
-    run_alpaca_ws_forever()
+def start_trade_updater():
+    """Run trade updater in its own thread."""
+    run_trade_updater()
 
 
 if __name__ == "__main__":
-    # Start WS client in background
-    ws_thread = threading.Thread(target=start_ws_client, daemon=True)
-    ws_thread.start()
+    # Start trade updater in background
+    updater_thread = threading.Thread(target=start_trade_updater, daemon=True)
+    updater_thread.start()
 
     # Start trade manager in main thread
     run_trade_manager()
