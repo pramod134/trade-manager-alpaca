@@ -304,7 +304,12 @@ def check_entry(
         return False, None
 
     if price is None:
-        return False, None
+    # For 'now' we still want to enter even if we couldn't fetch a price.
+    # We'll log entry_price=None and rely on Alpaca fill_price.
+    if cond == "now":
+        return True, None
+    return False, None
+
 
     # ---- immediate entry ----
     if cond == "now":
@@ -768,8 +773,10 @@ def run_trade_manager() -> None:
                     entry_price=entry_price,
                 )
 
-                if not should_enter or entry_price is None:
+                cond = (row.get("entry_cond") or "").lower()
+                if (not should_enter) or (entry_price is None and cond != "now"):
                     continue
+
 
                 log(
                     "info",
