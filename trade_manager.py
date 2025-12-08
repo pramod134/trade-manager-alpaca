@@ -26,12 +26,12 @@ def _is_real_order_id(order_id: Optional[str]) -> bool:
 
 
 def _rth_open_for_options() -> bool:
-    """Options allowed only 9:31–15:59 ET."""
+    """Options allowed only 9:38–15:59 ET."""
     now_et = datetime.now(ZoneInfo("America/New_York"))
     if now_et.weekday() >= 5:
         return False
     t = now_et.time()
-    return time(9, 31) <= t <= time(15, 59)
+    return time(9, 38) <= t <= time(15, 59)
 
 
 def _send_order_with_steps(row: Dict[str, Any], reason: str) -> None:
