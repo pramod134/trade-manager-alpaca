@@ -731,6 +731,7 @@ def run_trade_manager() -> None:
                                 qty=qty,
                                 close_price=close_price,
                                 reason="force",
+                                tags=row.get("tags"),
                             )
                         except Exception as e:
                             log(
