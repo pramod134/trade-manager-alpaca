@@ -133,6 +133,7 @@ def insert_executed_trade_open(row: Dict[str, Any], open_price: float) -> None:
         "open_ts": _now_iso(),
         "open_price": open_price,
         "open_cost_basis": open_cost_basis,
+        "tags": row.get("tags"),
     }
 
     data, err = _unwrap_response(
@@ -170,6 +171,9 @@ def update_executed_trade_close(
         "close_cost_basis": close_cost_basis,
         "close_reason": reason,
     }
+
+    if tags is not None:
+        update["tags"] = tags
 
     data, err = _unwrap_response(
         sb.table("executed_trades")
