@@ -152,6 +152,7 @@ def update_executed_trade_close(
     qty: int,
     close_price: float,
     reason: str,
+    tags: Optional[List[str]] = None,
 ) -> None:
     """
     On trade close (SL/TP/force), update the matching executed_trades row
