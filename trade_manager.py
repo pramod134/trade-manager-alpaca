@@ -1028,12 +1028,7 @@ def run_trade_updater() -> None:
 
                 # We have a price: insert executed_trades OPEN and promote
                 try:
-                    supabase_client.insert_executed_trade_open(
-                        active_trade_row=row,
-                        asset_type=asset_type,
-                        qty=qty,
-                        open_price=fill_price,
-                    )
+                    supabase_client.insert_executed_trade_open(row, fill_price)
                 except Exception as e:
                     log(
                         "error",
@@ -1096,6 +1091,7 @@ def run_trade_updater() -> None:
                         qty=qty,
                         close_price=fill_price,
                         reason=reason,
+                        tags=row.get("tags"),
                     )
                 except Exception as e:
                     log(
