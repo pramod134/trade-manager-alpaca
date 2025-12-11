@@ -233,6 +233,34 @@ def _now_iso() -> str:
 
 MARKET_TZ = ZoneInfo("America/New_York")
 
+def _to_et(dt_value: Any) -> Optional[datetime]:
+    """
+    Convert a DB timestamp (string or datetime, tz-aware or naive)
+    into an ET-aware datetime, or None if missing/invalid.
+    """
+    if not dt_value:
+        return None
+
+    dt: Optional[datetime] = None
+
+    if isinstance(dt_value, datetime):
+        dt = dt_value
+    elif isinstance(dt_value, str):
+        try:
+            # Handle plain ISO and "Z" suffix
+            s = dt_value.replace("Z", "+00:00")
+            dt = datetime.fromisoformat(s)
+        except Exception:
+            return None
+    else:
+        return None
+
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+
+    return dt.astimezone(MARKET_TZ)
+
+
 
 def _is_regular_market_open_now() -> bool:
     """
@@ -552,6 +580,7 @@ def run_trade_manager() -> None:
             sl_type = (row.get("sl_type") or "").lower()
             tp_type = (row.get("tp_type") or "").lower()
             qty = int(row.get("qty") or 0)
+            
 
             # New: broker-order metadata from DB
             order_id = row.get("order_id")
@@ -575,6 +604,14 @@ def run_trade_manager() -> None:
                 order_status=order_status,
                 order_comment=order_comment,
             )
+
+            # Time-window fields (from DB) → convert to ET
+            entry_time_raw = row.get("entry_time")
+            end_time_raw = row.get("end_time")
+            now_et = datetime.now(MARKET_TZ)
+            entry_time_et = _to_et(entry_time_raw)
+            end_time_et = _to_et(end_time_raw)
+
 
             # ---------- AUTO-PROMOTE FILLED ENTRIES ----------
             # If Alpaca/WebSocket already marked the order as filled but our
@@ -606,6 +643,74 @@ def run_trade_manager() -> None:
                         order_id=order_id,
                         error=str(e),
                     )
+
+
+            # ---------- TIME WINDOW CHECKS ----------
+            # Only for trades managed by the bot
+            if manage == "Y":
+                # PRE-ENTRY: nt-waiting — gate by entry_time / end_time
+                if status == "nt-waiting":
+                    # 1) Too early → skip completely
+                    if entry_time_et and now_et < entry_time_et:
+                        log(
+                            "debug",
+                            "tm_entry_time_not_reached",
+                            id=row_id,
+                            symbol=symbol,
+                            now=now_et.isoformat(),
+                            entry_time=entry_time_et.isoformat(),
+                        )
+                        continue
+
+                    # 2) Window expired before any entry → delete the trade
+                    if end_time_et and now_et > end_time_et:
+                        log(
+                            "info",
+                            "tm_entry_window_expired_delete",
+                            id=row_id,
+                            symbol=symbol,
+                            now=now_et.isoformat(),
+                            end_time=end_time_et.isoformat(),
+                        )
+                        try:
+                            supabase_client.delete_trade(row_id)
+                        except Exception as e:
+                            log(
+                                "error",
+                                "tm_entry_window_delete_error",
+                                id=row_id,
+                                error=str(e),
+                            )
+                        continue
+
+                # POST-ENTRY: managing — force close after end_time
+                if status in ("nt-managing", "pos-managing") and end_time_et and now_et > end_time_et:
+                    log(
+                        "info",
+                        "tm_time_exit_mark_force",
+                        id=row_id,
+                        symbol=symbol,
+                        now=now_et.isoformat(),
+                        end_time=end_time_et.isoformat(),
+                    )
+                    try:
+                        sb = supabase_client.get_client()
+                        sb.table("active_trades").update(
+                            {
+                                "manage": "C",
+                                "comment": "time_exit",
+                            }
+                        ).eq("id", row_id).execute()
+                    except Exception as e:
+                        log(
+                            "error",
+                            "tm_time_exit_mark_force_error",
+                            id=row_id,
+                            error=str(e),
+                        )
+                    # Let the next loop handle manage='C' force-close logic
+                    continue
+            
 
             # ---------- Fetch spot rows for underlying + option ----------
             spot_under = None
