@@ -747,6 +747,7 @@ def run_trade_manager() -> None:
             terminal_order_statuses = ("filled", "rejected", "canceled", "expired")
 
             # ---------- MANAGE = 'C' (force close) ----------
+            # ---------- MANAGE = 'C' (force close) ----------
             if manage == "C":
                 log(
                     "info",
@@ -777,86 +778,38 @@ def run_trade_manager() -> None:
                         )
                     continue
 
-                # If managing, close via broker, record close price ONLY if we have a fill
+                # If we are managing a position, send a single EXIT order via the
+                # unified pipeline and let run_trade_updater handle fill + delete.
                 if status in ("nt-managing", "pos-managing"):
-                    if asset_type == "equity":
-                        signal_price = _get_spot_price(spot_under)
+                    # If an exit order is already working, do NOT send another
+                    if order_id and order_status not in TERMINAL_ORDER_STATUSES:
                         log(
                             "debug",
-                            "tm_force_close_place_equity",
+                            "tm_force_close_order_pending",
                             id=row_id,
                             symbol=symbol,
-                            qty=qty,
-                            signal_price=signal_price,
+                            order_id=order_id,
+                            order_status=order_status,
                         )
-                        fill_price, _, _, _ = alpaca_client.place_equity_market(
-                            symbol, qty, "sell"
-                        )
-                    else:
-                        signal_price = _get_spot_price(spot_option)
-                        log(
-                            "debug",
-                            "tm_force_close_place_option",
-                            id=row_id,
-                            occ=occ,
-                            qty=qty,
-                            signal_price=signal_price,
-                        )
-                        fill_price, _, _, _ = alpaca_client.place_option_market(
-                            occ, qty, "sell_to_close"
-                        )
+                        continue
 
                     log(
-                        "debug",
-                        "tm_force_close_result",
+                        "info",
+                        "tm_force_close_send_order",
                         id=row_id,
                         symbol=symbol,
-                        occ=occ,
-                        fill_price=fill_price,
-                        signal_price=signal_price,
+                        qty=qty,
+                        asset_type=asset_type,
                     )
 
-                    # Only treat as closed if we have a confirmed fill
-                    if fill_price is None:
-                        log(
-                            "error",
-                            "tm_force_close_no_fill",
-                            id=row_id,
-                            symbol=symbol,
-                            occ=occ,
-                            asset_type=asset_type,
-                            qty=qty,
-                        )
-                    else:
-                        close_price = fill_price
-                        try:
-                            supabase_client.update_executed_trade_close(
-                                active_trade_id=row_id,
-                                asset_type=asset_type,
-                                qty=qty,
-                                close_price=close_price,
-                                reason="force",
-                                tags=row.get("tags"),
-                            )
-                        except Exception as e:
-                            log(
-                                "error",
-                                "tm_force_executed_update_error",
-                                id=row_id,
-                                error=str(e),
-                            )
-
-                        try:
-                            supabase_client.delete_trade(row_id)
-                        except Exception as e:
-                            log(
-                                "error",
-                                "tm_force_delete_error",
-                                id=row_id,
-                                error=str(e),
-                            )
+                    # Use atomic pipeline so order_id / status are tracked,
+                    # and run_trade_updater can close + delete the row.
+                    _send_order_with_steps(row, "force")
+                    time_module.sleep(1)
+                    continue
 
                 continue  # done with manage='C'
+
 
             # ---------- MANAGE = 'Y' ----------
             if manage != "Y":
