@@ -50,22 +50,9 @@ def get_order_status(
     Optional[str],        # error_message
 ]:
 
-#def get_order_status(order_id: str) -> Tuple[Optional[str], Optional[float], Optional[int], Optional[str]]:
-    """
-    Fetch the current status of an Alpaca order by its order_id.
-
-    Returns:
-        (status, filled_avg_price, error_code, error_message)
-
-        - status: e.g. 'new', 'accepted', 'pending_new', 'partially_filled',
-                  'filled', 'canceled', 'rejected', 'expired', etc.
-                  None if we couldn't fetch a valid response.
-        - filled_avg_price: float or None (from 'filled_avg_price' in the order)
-        - error_code: HTTP status code (int) on error, else None.
-        - error_message: Short error message/text on error, else None.
-    """
     if not order_id:
-        return None, None, None, "empty order_id"
+        return None, None, None, None, "empty order_id"
+      
 
     url = f"{_order_url()}/{order_id}"
 
