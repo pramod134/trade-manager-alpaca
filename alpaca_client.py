@@ -40,8 +40,17 @@ def _headers() -> dict:
         "Content-Type": "application/json",
     }
 
+def get_order_status(
+    order_id: str
+) -> Tuple[
+    Optional[str],        # status
+    Optional[float],      # filled_price
+    Optional[str],        # filled_time (ISO string)
+    Optional[int],        # error_code
+    Optional[str],        # error_message
+]:
 
-def get_order_status(order_id: str) -> Tuple[Optional[str], Optional[float], Optional[int], Optional[str]]:
+#def get_order_status(order_id: str) -> Tuple[Optional[str], Optional[float], Optional[int], Optional[str]]:
     """
     Fetch the current status of an Alpaca order by its order_id.
 
@@ -66,8 +75,13 @@ def get_order_status(order_id: str) -> Tuple[Optional[str], Optional[float], Opt
             resp.raise_for_status()
             data = resp.json() or {}
             status = data.get("status")
+
             price_raw = data.get("filled_avg_price")
             filled_price = float(price_raw) if price_raw is not None else None
+            
+            # Alpaca provides filled_at as ISO8601 when filled
+            filled_time = data.get("filled_at")  # keep as ISO string
+
 
             if not status:
                 log(
@@ -77,7 +91,7 @@ def get_order_status(order_id: str) -> Tuple[Optional[str], Optional[float], Opt
                     raw=data,
                 )
 
-            return status, filled_price, None, None
+            return status, filled_price, filled_time, None, None
 
     except httpx.HTTPStatusError as e:
         status_code = e.response.status_code if e.response is not None else None
@@ -91,7 +105,7 @@ def get_order_status(order_id: str) -> Tuple[Optional[str], Optional[float], Opt
             status_code=status_code,
             response_text=short_text,
         )
-        return None, None, status_code, short_text
+        return None, None, None, status_code, short_text
 
     except Exception as e:
         msg = str(e)[:250]
@@ -101,7 +115,7 @@ def get_order_status(order_id: str) -> Tuple[Optional[str], Optional[float], Opt
             order_id=order_id,
             error=msg,
         )
-        return None, None, None, msg
+        return None, None, None, None, msg
 
 
 def _order_url() -> str:
@@ -210,7 +224,7 @@ def place_equity_market(
                     response_text=text,
                     error=str(e),
                 )
-                return None, None, status_code, short_text
+                return None, None, None, status_code, short_text
 
             payload = resp.json()
             log("info", "alpaca_equity_raw_payload", payload=payload)
@@ -226,7 +240,7 @@ def place_equity_market(
             error=msg,
         )
         # error_code = None -> manager can decide whether to treat as fatal/soft
-        return None, None, None, msg
+        return None, None, None, None, msg
 
     status = (payload or {}).get("status")
     if status not in (
@@ -326,7 +340,7 @@ def place_option_market(
             side=side,
         )
         # No HTTP error here; manager can treat this as soft/no-op if desired
-        return None, None, None, msg
+        return None, None, None, None, msg
 
     url = _order_url()
     occ_clean = _normalize_occ(occ)
@@ -374,7 +388,7 @@ def place_option_market(
                     response_text=text,
                     error=str(e),
                 )
-                return None, None, status_code, short_text
+                return None, None, None, status_code, short_text
 
             payload = resp.json()
             log("info", "alpaca_option_raw_payload", payload=payload)
@@ -388,7 +402,7 @@ def place_option_market(
             side=side,
             error=msg,
         )
-        return None, None, None, msg
+        return None, None, None, None, msg
 
     status = (payload or {}).get("status")
     if status not in (
