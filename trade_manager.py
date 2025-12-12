@@ -1019,7 +1019,18 @@ def run_trade_updater() -> None:
             )
 
             # ---- Poll Alpaca for latest order status + filled price ----
-            alp_status, fill_price, err_code, err_msg = alpaca_client.get_order_status(order_id)
+            # ---- Poll Alpaca for latest order status + filled price + filled time ----
+            fill_time = None
+            res = alpaca_client.get_order_status(order_id)
+            
+            # Backward-compatible:
+            #   old: (status, fill_price, err_code, err_msg)
+            #   new: (status, fill_price, fill_time, err_code, err_msg)
+            if isinstance(res, (list, tuple)) and len(res) == 5:
+                alp_status, fill_price, fill_time, err_code, err_msg = res
+            else:
+                alp_status, fill_price, err_code, err_msg = res
+
 
             if alp_status is None:
                 log(
@@ -1070,12 +1081,17 @@ def run_trade_updater() -> None:
                     )
                     # Still mark as filled + nt-managing
                     try:
-                        sb.table("active_trades").update(
-                            {
-                                "order_status": "filled",
-                                "status": "nt-managing",
-                            }
-                        ).eq("id", row_id).execute()
+                        payload = {
+                            "order_status": "filled",
+                            "status": "nt-managing",
+                        }
+                        
+                        # Only set if currently NULL on the row (don’t overwrite truth)
+                        if row.get("filled_time") is None and fill_time is not None:
+                            payload["filled_time"] = fill_time
+                        
+                        sb.table("active_trades").update(payload).eq("id", row_id).execute()
+
                     except Exception as e:
                         log(
                             "error",
@@ -1097,12 +1113,19 @@ def run_trade_updater() -> None:
                     )
 
                 try:
-                    sb.table("active_trades").update(
-                        {
-                            "order_status": "filled",
-                            "status": "nt-managing",
-                        }
-                    ).eq("id", row_id).execute()
+                    payload = {
+                        "order_status": "filled",
+                        "status": "nt-managing",
+                    }
+                    
+                    # Only set if currently NULL on the row (don’t overwrite truth)
+                    if row.get("filled_price") is None and fill_price is not None:
+                        payload["filled_price"] = fill_price
+                    if row.get("filled_time") is None and fill_time is not None:
+                        payload["filled_time"] = fill_time
+                    
+                    sb.table("active_trades").update(payload).eq("id", row_id).execute()
+
                 except Exception as e:
                     log(
                         "error",
