@@ -31,7 +31,7 @@ def _rth_open_for_options() -> bool:
     if now_et.weekday() >= 5:
         return False
     t = now_et.time()
-    return time(9, 46) <= t <= time(15, 59)
+    return time(9, 31) <= t <= time(15, 59)
 
 
 def _send_order_with_steps(row: Dict[str, Any], reason: str) -> None:
